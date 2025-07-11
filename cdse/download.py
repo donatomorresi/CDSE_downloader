@@ -66,25 +66,18 @@ def get_token(username, password):
     return token
 
 # Download per image
-def download(token, image_id, image_name, downloadDir):
-    headers = {"Authorization": f"Bearer {token}"}
-    # Create a session and update headers
-    session = requests.Session()
-    session.headers.update(headers)
-
+def download(session, image_id, image_name, downloadDir):
     url = f"https://download.dataspace.copernicus.eu/odata/v1/Products({image_id})/$value"
-
     response = session.get(url, stream=True)
-    # Check if the request was successful
     if response.status_code == 200:
-        with open(f"{downloadDir}/{image_name}.zip", "wb") as file:
+        with open(f"{downloadDir}/{image_name}.zip", "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
-                if chunk:  # filter out keep-alive new chunks
-                    file.write(chunk)
+                if chunk:
+                    f.write(chunk)
     else:
-        print(f"Failed to download {image_name}. Status code: {response.status_code}")
+        print(f"Failed to download {image_name}: HTTP {response.status_code}")
         print(response.text)
-    return 1
+    return
 
 
 def main():
@@ -136,6 +129,9 @@ def main():
         print("Getting token failed! Check username and password!")
         sys.exit()
 
+    session = requests.Session()
+    session.headers.update({"Authorization": f"Bearer {token}"})
+
     print(f'Downloading {len(image_names)} images...', flush=True)
     for i in range(len(images_id)):
         current_time = time.time()
@@ -143,10 +139,11 @@ def main():
 
         # CDSE token expire after 10 minutes (600 seconds), new token is refreshed after 550 seconds
         if durations > 550:
-            start_time = time.time()
             token = get_token(username, password)
+            session.headers.update({"Authorization": f"Bearer {token}"})
+            start_time = time.time()
         try:
-            download(token, images_id[i], image_names[i], downloadDir)
+            download(session, images_id[i], image_names[i], downloadDir)
             print(f'Done {i + 1} / {len(image_names)} : {image_names[i]}', flush=True)
         except Exception as e:
             print(f"Failed to download: {image_names[i]}")
