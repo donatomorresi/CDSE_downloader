@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="cdse-s2",
-    version="1.00",
+    version="1.10",
     packages=find_packages(), 
     install_requires=[
         "requests",

@@ -61,27 +61,43 @@ def get_token(username, password):
             "grant_type": "password",
             }
 
-    r = requests.post("https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token", data=data)
+    r = requests.post(
+        "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token",
+        data=data,
+    )
+    r.raise_for_status()
     token = r.json()["access_token"]
     return token
 
 # Download per image
 def download(session, image_id, image_name, downloadDir):
-    url = f"https://download.dataspace.copernicus.eu/odata/v1/Products({image_id})/$value"
-    response = session.get(url, stream=True)
-    if response.status_code == 200:
-        with open(f"{downloadDir}/{image_name}.zip", "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-    else:
-        print(f"Failed to download {image_name}: HTTP {response.status_code}")
-        print(response.text)
+    base_url = f"https://download.dataspace.copernicus.eu/odata/v1/Products({image_id})"
+    endpoints = ["/$value", "/$zip"]
+    for endpoint in endpoints:
+        response = session.get(f"{base_url}{endpoint}", stream=True)
+        if response.status_code == 200:
+            with open(f"{downloadDir}/{image_name}.zip", "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            return
+
+        # Retry with the next endpoint if not found or unsupported
+        if response.status_code not in (400, 404):
+            print(f"Failed to download {image_name}: HTTP {response.status_code}")
+            print(response.text)
+            return
+
+    print(f"Failed to download {image_name}: neither /$value nor /$zip is available.")
     return
 
 
 def main():
-    parser = argparse.ArgumentParser(prog='download', description="This tool for downloading Sentinel-2 A,B from CDSE", add_help=True)
+    parser = argparse.ArgumentParser(
+        prog='download',
+        description="This tool downloads Sentinel products from CDSE using product IDs from a query JSON file.",
+        add_help=True,
+    )
     parser.add_argument(
         'jsonFile',
         help='Path to the JSON file generated from the search tool'
