@@ -2,6 +2,8 @@ from pathlib import Path
 from typing import Union, Pattern, Generator, List, Optional
 from importlib.resources import files
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import geopandas as gpd
 from shapely.ops import transform
 import json
@@ -10,6 +12,8 @@ import re
 from datetime import datetime
 import os
 import sys
+
+CATALOGUE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
 
 
 class argparseCondition:
@@ -86,7 +90,13 @@ def convert_polygon_to_wkt(aoi_path: str) -> str:
         aoi = aoi.dissolve()
 
     geometry = aoi.geometry.values[0]
-    geometry = geometry.simplify(tolerance=0.01, preserve_topology=True)
+
+    # Keep the URL payload manageable for S1 OData intersects queries.
+    for tolerance in (0.05, 0.1, 0.2, 0.5):
+        candidate = geometry.simplify(tolerance=tolerance, preserve_topology=True)
+        if len(candidate.wkt) <= 12000 or tolerance == 0.5:
+            return candidate.wkt
+
     return geometry.wkt
 
 
@@ -119,14 +129,38 @@ def read_list_id(aoi_path: str) -> List[str]:
     return lines
 
 
-def fetch_all_data(query: str) -> List[dict]:
+def make_retry_session() -> requests.Session:
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        backoff_factor=1.0,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session = requests.Session()
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def fetch_all_data(filter_expression: str) -> List[dict]:
     all_data = []
-    while query:
-        response = requests.get(query)
+    session = make_retry_session()
+    params = {"$filter": filter_expression, "$top": 1000}
+    next_url = CATALOGUE_URL
+
+    while next_url:
+        if next_url == CATALOGUE_URL:
+            response = session.get(next_url, params=params, timeout=120)
+        else:
+            response = session.get(next_url, timeout=120)
         response.raise_for_status()
         json_return = response.json()
         all_data.extend(json_return.get("value", []))
-        query = json_return.get("@odata.nextLink")
+        next_url = json_return.get("@odata.nextLink")
     return all_data
 
 
@@ -151,9 +185,8 @@ def make_double_attribute_filter(name: str, value: float, op: str) -> str:
     )
 
 
-def build_query(filter_parts: List[str]) -> str:
-    filter_expression = " and ".join(filter_parts)
-    return f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter={filter_expression}&$top=1000"
+def build_filter_expression(filter_parts: List[str]) -> str:
+    return " and ".join(filter_parts)
 
 
 def search_s2_by_list(
@@ -176,8 +209,8 @@ def search_s2_by_list(
             make_double_attribute_filter("cloudCover", cloud_min, "ge"),
             make_double_attribute_filter("cloudCover", cloud_max, "le"),
         ]
-        query = build_query(filters)
-        data_temp = fetch_all_data(query)
+        filter_expression = build_filter_expression(filters)
+        data_temp = fetch_all_data(filter_expression)
         if len(data_temp) > 0:
             data_return.extend(data_temp)
 
@@ -208,8 +241,8 @@ def search_s1_by_aoi(
     if polarisation:
         filters.append(make_string_attribute_filter("polarisationChannels", polarisation))
 
-    query = build_query(filters)
-    return fetch_all_data(query)
+    filter_expression = build_filter_expression(filters)
+    return fetch_all_data(filter_expression)
 
 
 def search_force_logs(
@@ -285,7 +318,7 @@ def main():
     parser.add_argument(
         "--polarisation",
         default=None,
-        help="Sentinel-1 optional filter by polarisation channels (for example VV,VH or HH,HV).",
+        help="Sentinel-1 optional filter by polarisation channels (for example VV&VH or HH&HV).",
     )
     parser.add_argument(
         "-n",
