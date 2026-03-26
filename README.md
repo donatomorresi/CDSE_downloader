@@ -99,3 +99,21 @@ cdse-download \
 Downloader behavior:
 - tries `/$value` first
 - falls back to `/$zip` (useful for some Sentinel-1 products)
+
+Direct COG HTTP mode (parallel assets):
+
+```bash
+cdse-download \
+  ./test_data/query.json \
+  ./download_dir \
+  ./test_data/secret.txt \
+  --mode cog-http \
+  --assets vv,vh \
+  --workers 16
+```
+
+Notes for direct COG HTTP mode:
+- reads each product from your query JSON and resolves STAC asset links
+- downloads selected assets in parallel using HTTPS links (`zipper.dataspace.copernicus.eu`)
+- useful for Sentinel-1 COG products and large-volume workflows
+- use `--assets all` to download all STAC data assets
