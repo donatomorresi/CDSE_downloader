@@ -44,6 +44,7 @@ Optional arguments:
 - `--orbit-direction`: S1 optional filter (for example `ASCENDING`, `DESCENDING`)
 - `--relative-orbit`: S1 optional integer filter
 - `--polarisation`: S1 optional filter (for example `VV&VH`)
+- `--simplify-aoi` / `--no-simplify-aoi`: S1 only, enable/disable geometry simplification before querying
 - `-f | --forcelogs`: path to FORCE logs, matched product names will be excluded
 - `-n | --no-action`: dry search without writing JSON
 

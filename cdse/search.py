@@ -75,7 +75,9 @@ def _simplify_geometry_for_query(geometry, max_wkt_len: int = 12000):
     return geometry.simplify(tolerance=0.5, preserve_topology=True)
 
 
-def convert_aoi_to_wkt_tiles(aoi_path: str, max_wkt_len: int = 12000) -> List[str]:
+def convert_aoi_to_wkt_tiles(
+    aoi_path: str, max_wkt_len: int = 12000, simplify_geometries: bool = True
+) -> List[str]:
     def drop_z(geometry):
         if geometry is None:
             return None
@@ -108,7 +110,8 @@ def convert_aoi_to_wkt_tiles(aoi_path: str, max_wkt_len: int = 12000) -> List[st
             geometry = geometry.buffer(0)
         if geometry.is_empty:
             continue
-        geometry = _simplify_geometry_for_query(geometry, max_wkt_len=max_wkt_len)
+        if simplify_geometries:
+            geometry = _simplify_geometry_for_query(geometry, max_wkt_len=max_wkt_len)
         wkts.append(geometry.wkt)
 
     if len(wkts) < 1:
@@ -386,6 +389,19 @@ def main():
         default=None,
         help="Sentinel-1 optional filter by polarisation channels (for example VV&VH or HH&HV).",
     )
+    parser.set_defaults(simplify_aoi=True)
+    parser.add_argument(
+        "--simplify-aoi",
+        dest="simplify_aoi",
+        action="store_true",
+        help="Sentinel-1 only: simplify AOI geometries before querying (default).",
+    )
+    parser.add_argument(
+        "--no-simplify-aoi",
+        dest="simplify_aoi",
+        action="store_false",
+        help="Sentinel-1 only: keep AOI geometries as-is (can create very large queries).",
+    )
     parser.add_argument(
         "-n",
         "--no-action",
@@ -483,8 +499,13 @@ def main():
             info.append(f" - Polarisation: {args.polarisation}")
 
         if aoi.endswith((".gpkg", ".shp", ".geojson")):
-            aoi_wkts = convert_aoi_to_wkt_tiles(aoi)
+            aoi_wkts = convert_aoi_to_wkt_tiles(
+                aoi, simplify_geometries=args.simplify_aoi
+            )
             info.append(f" - AOI tiles: {len(aoi_wkts)}")
+            info.append(
+                f" - AOI simplify: {'enabled' if args.simplify_aoi else 'disabled'}"
+            )
         else:
             print(f"{aoi} has an invalid extension for S1 search. Use .gpkg, .shp, or .geojson.")
             sys.exit()
