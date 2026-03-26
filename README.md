@@ -43,9 +43,13 @@ Optional arguments:
 - `-c | --cloudcover`: S2 only, valid values `0,100`
 - `--orbit-direction`: S1 optional filter (for example `ASCENDING`, `DESCENDING`)
 - `--relative-orbit`: S1 optional integer filter
-- `--polarisation`: S1 optional filter (for example `VV,VH`)
+- `--polarisation`: S1 optional filter (for example `VV&VH`)
 - `-f | --forcelogs`: path to FORCE logs, matched product names will be excluded
 - `-n | --no-action`: dry search without writing JSON
+
+Sentinel-1 search behavior:
+- each polygon geometry from the input vector is queried separately
+- results from all geometry tiles are merged and deduplicated by product `Id`
 
 Sentinel-2 example:
 

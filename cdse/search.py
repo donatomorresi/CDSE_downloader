@@ -67,7 +67,15 @@ class argparseCondition:
             )
 
 
-def convert_polygon_to_wkt(aoi_path: str) -> str:
+def _simplify_geometry_for_query(geometry, max_wkt_len: int = 12000):
+    for tolerance in (0.01, 0.05, 0.1, 0.2, 0.5):
+        candidate = geometry.simplify(tolerance=tolerance, preserve_topology=True)
+        if len(candidate.wkt) <= max_wkt_len:
+            return candidate
+    return geometry.simplify(tolerance=0.5, preserve_topology=True)
+
+
+def convert_aoi_to_wkt_tiles(aoi_path: str, max_wkt_len: int = 12000) -> List[str]:
     def drop_z(geometry):
         if geometry is None:
             return None
@@ -86,18 +94,27 @@ def convert_polygon_to_wkt(aoi_path: str) -> str:
     aoi = aoi.to_crs("EPSG:4326")
     aoi["geometry"] = aoi["geometry"].apply(drop_z)
 
-    if len(aoi) > 1:
-        aoi = aoi.dissolve()
+    # Keep per-tile geometry separate for S1 requests, this avoids huge single AOI queries.
+    try:
+        aoi = aoi.explode(index_parts=False, ignore_index=True)
+    except TypeError:
+        aoi = aoi.explode(index_parts=False).reset_index(drop=True)
 
-    geometry = aoi.geometry.values[0]
+    wkts = []
+    for geometry in aoi.geometry.values:
+        if geometry is None or geometry.is_empty:
+            continue
+        if not geometry.is_valid:
+            geometry = geometry.buffer(0)
+        if geometry.is_empty:
+            continue
+        geometry = _simplify_geometry_for_query(geometry, max_wkt_len=max_wkt_len)
+        wkts.append(geometry.wkt)
 
-    # Keep the URL payload manageable for S1 OData intersects queries.
-    for tolerance in (0.05, 0.1, 0.2, 0.5):
-        candidate = geometry.simplify(tolerance=tolerance, preserve_topology=True)
-        if len(candidate.wkt) <= 12000 or tolerance == 0.5:
-            return candidate.wkt
+    if len(wkts) < 1:
+        raise ValueError(f"{aoi_path} does not contain usable polygon geometries.")
 
-    return geometry.wkt
+    return wkts
 
 
 def convert_aoi_to_s2idlist(aoi_path: str) -> List[str]:
@@ -245,6 +262,55 @@ def search_s1_by_aoi(
     return fetch_all_data(filter_expression)
 
 
+def deduplicate_products(products: List[dict]) -> List[dict]:
+    seen = set()
+    unique = []
+    for product in products:
+        key = product.get("Id") or product.get("Name")
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(product)
+    return unique
+
+
+def search_s1_by_aoi_tiles(
+    start_date: str,
+    end_date: str,
+    aoi_wkts: List[str],
+    product_type: str,
+    orbit_direction: Optional[str] = None,
+    relative_orbit: Optional[int] = None,
+    polarisation: Optional[str] = None,
+) -> List[dict]:
+    all_results = []
+    n_tiles = len(aoi_wkts)
+
+    for i, aoi_wkt in enumerate(aoi_wkts, start=1):
+        records = search_s1_by_aoi(
+            start_date=start_date,
+            end_date=end_date,
+            aoi_wkt=aoi_wkt,
+            product_type=product_type,
+            orbit_direction=orbit_direction,
+            relative_orbit=relative_orbit,
+            polarisation=polarisation,
+        )
+        if len(records) > 0:
+            all_results.extend(records)
+
+        if n_tiles <= 20 or i == 1 or i == n_tiles or i % 10 == 0:
+            print(f"S1 AOI tile {i}/{n_tiles}: {len(records)} records", flush=True)
+
+    unique_results = deduplicate_products(all_results)
+    if len(unique_results) != len(all_results):
+        print(
+            f"Deduplicated S1 results: {len(all_results)} -> {len(unique_results)}",
+            flush=True,
+        )
+    return unique_results
+
+
 def search_force_logs(
     dir_logs: Union[str, Path], rx: Union[Pattern, str] = None, recursive: bool = True
 ) -> Generator[Path, None, None]:
@@ -342,7 +408,7 @@ def main():
         "aoi",
         help=(
             "AOI input path. For S2: .txt tile list or vector (.shp/.gpkg/.geojson). "
-            "For S1: vector only (.shp/.gpkg/.geojson)."
+            "For S1: vector only (.shp/.gpkg/.geojson), each geometry is queried separately and merged."
         ),
     )
     parser.add_argument(
@@ -417,7 +483,8 @@ def main():
             info.append(f" - Polarisation: {args.polarisation}")
 
         if aoi.endswith((".gpkg", ".shp", ".geojson")):
-            aoi_wkt = convert_polygon_to_wkt(aoi)
+            aoi_wkts = convert_aoi_to_wkt_tiles(aoi)
+            info.append(f" - AOI tiles: {len(aoi_wkts)}")
         else:
             print(f"{aoi} has an invalid extension for S1 search. Use .gpkg, .shp, or .geojson.")
             sys.exit()
@@ -425,10 +492,10 @@ def main():
         if args.cloudcover != (0, 100):
             print("Note: --cloudcover is ignored for Sentinel-1 searches.", flush=True)
 
-        search_results = search_s1_by_aoi(
+        search_results = search_s1_by_aoi_tiles(
             start_date=start_date,
             end_date=end_date,
-            aoi_wkt=aoi_wkt,
+            aoi_wkts=aoi_wkts,
             product_type=product_type,
             orbit_direction=orbit_direction,
             relative_orbit=args.relative_orbit,
