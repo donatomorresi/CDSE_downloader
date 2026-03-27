@@ -114,6 +114,7 @@ cdse-download \
 
 Notes for direct COG HTTP mode:
 - reads each product from your query JSON and resolves STAC asset links
+- uses batched STAC lookup with retry/backoff to reduce 429 rate-limit errors
 - downloads selected assets in parallel using HTTPS links (`zipper.dataspace.copernicus.eu`)
 - useful for Sentinel-1 COG products and large-volume workflows
 - use `--assets all` to download all STAC data assets

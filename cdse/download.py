@@ -8,6 +8,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from urllib.parse import urlparse
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 STAC_BASE_URL = "https://stac.dataspace.copernicus.eu/v1"
 
@@ -84,6 +86,28 @@ def get_token(username, password):
     return token
 
 
+def make_retry_session(
+    total=8,
+    backoff_factor=1.0,
+    status_forcelist=(429, 500, 502, 503, 504),
+):
+    retry = Retry(
+        total=total,
+        connect=total,
+        read=total,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+        allowed_methods=frozenset(["GET", "POST"]),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session = requests.Session()
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 class TokenProvider:
     def __init__(self, username, password):
         self.username = username
@@ -151,6 +175,30 @@ def fetch_stac_item(stac_session, collection_id, item_id):
     return response.json()
 
 
+def fetch_stac_items_by_ids(stac_session, collection_id, item_ids, batch_size=100):
+    items_map = {}
+    if len(item_ids) < 1:
+        return items_map
+
+    search_url = f"{STAC_BASE_URL}/search"
+    for i in range(0, len(item_ids), batch_size):
+        batch = item_ids[i : i + batch_size]
+        payload = {
+            "collections": [collection_id],
+            "ids": batch,
+            "limit": len(batch),
+        }
+        response = stac_session.post(search_url, json=payload, timeout=120)
+        response.raise_for_status()
+        data = response.json()
+        features = data.get("features", [])
+        for feature in features:
+            item_id = feature.get("id")
+            if item_id:
+                items_map[item_id] = feature
+    return items_map
+
+
 def select_asset_links(item, asset_names):
     assets = item.get("assets", {})
     selected = []
@@ -185,10 +233,11 @@ def build_asset_output_path(download_dir, product_name, asset_name, asset_url):
 
 def download_asset_http(url, output_path, token_provider):
     tmp_path = f"{output_path}.part"
+    session = make_retry_session(total=5, backoff_factor=1.0)
     for i_try in range(2):
         token = token_provider.get(force_refresh=(i_try > 0))
         headers = {"Authorization": f"Bearer {token}"}
-        response = requests.get(url, headers=headers, stream=True, timeout=180)
+        response = session.get(url, headers=headers, stream=True, timeout=180)
 
         if response.status_code == 401 and i_try == 0:
             continue
@@ -205,9 +254,11 @@ def download_asset_http(url, output_path, token_provider):
 
 
 def download_cog_http(data, download_dir, token_provider, asset_names, workers):
-    stac_session = requests.Session()
+    stac_session = make_retry_session(total=8, backoff_factor=1.0)
     tasks = []
     skipped_products = 0
+    skipped_missing_items = 0
+    products_by_collection = {}
 
     for product in data:
         product_name = product.get("Name", "")
@@ -220,29 +271,44 @@ def download_cog_http(data, download_dir, token_provider, asset_names, workers):
             continue
 
         item_id = stac_item_id_from_name(product_name)
-        item = fetch_stac_item(stac_session, collection_id, item_id)
-        if item is None:
-            print(f"STAC item not found for product: {product_name}")
-            continue
+        products_by_collection.setdefault(collection_id, []).append((product_name, item_id))
 
-        links = select_asset_links(item, asset_names)
-        if len(links) < 1:
-            print(f"No matching assets for {product_name}")
-            continue
+    for collection_id, entries in products_by_collection.items():
+        unique_item_ids = sorted(set(item_id for _, item_id in entries))
+        items_map = fetch_stac_items_by_ids(
+            stac_session=stac_session,
+            collection_id=collection_id,
+            item_ids=unique_item_ids,
+            batch_size=100,
+        )
 
-        for asset_name, asset_url in links:
-            output_path = build_asset_output_path(
-                download_dir=download_dir,
-                product_name=product_name,
-                asset_name=asset_name,
-                asset_url=asset_url,
-            )
-            if os.path.isfile(output_path):
+        for product_name, item_id in entries:
+            item = items_map.get(item_id)
+            if item is None:
+                skipped_missing_items += 1
+                print(f"STAC item not found for product: {product_name}")
                 continue
-            tasks.append((product_name, asset_name, asset_url, output_path))
+
+            links = select_asset_links(item, asset_names)
+            if len(links) < 1:
+                print(f"No matching assets for {product_name}")
+                continue
+
+            for asset_name, asset_url in links:
+                output_path = build_asset_output_path(
+                    download_dir=download_dir,
+                    product_name=product_name,
+                    asset_name=asset_name,
+                    asset_url=asset_url,
+                )
+                if os.path.isfile(output_path):
+                    continue
+                tasks.append((product_name, asset_name, asset_url, output_path))
 
     if skipped_products > 0:
         print(f"Skipped {skipped_products} products with unsupported collection mapping.")
+    if skipped_missing_items > 0:
+        print(f"Skipped {skipped_missing_items} products missing from STAC.")
 
     if len(tasks) < 1:
         print("No COG HTTP assets to download (all done or no matching assets found).")
