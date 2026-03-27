@@ -199,9 +199,31 @@ def fetch_stac_items_by_ids(stac_session, collection_id, item_ids, batch_size=10
     return items_map
 
 
+def _infer_extension_from_asset(asset, asset_url):
+    local_path = asset.get("file:local_path")
+    if isinstance(local_path, str):
+        ext = os.path.splitext(local_path)[1]
+        if ext:
+            return ext
+
+    asset_type = (asset.get("type") or "").lower()
+    if "zip" in asset_type:
+        return ".zip"
+    if "tiff" in asset_type or "geotiff" in asset_type:
+        return ".tiff"
+
+    ext = os.path.splitext(urlparse(asset_url).path)[1]
+    return ext or ".bin"
+
+
+def _canonical_asset_key_map(assets):
+    return {k.lower(): k for k in assets.keys()}
+
+
 def select_asset_links(item, asset_names):
     assets = item.get("assets", {})
     selected = []
+    canonical_map = _canonical_asset_key_map(assets)
 
     if asset_names == ["all"]:
         keys = []
@@ -211,7 +233,11 @@ def select_asset_links(item, asset_names):
             if "data" in value.get("roles", []):
                 keys.append(key)
     else:
-        keys = asset_names
+        keys = []
+        for key in asset_names:
+            canonical_key = canonical_map.get(key.lower())
+            if canonical_key is not None:
+                keys.append(canonical_key)
 
     for key in keys:
         asset = assets.get(key)
@@ -220,12 +246,26 @@ def select_asset_links(item, asset_names):
         alt_https = asset.get("alternate", {}).get("https", {}).get("href")
         href = alt_https or asset.get("href")
         if isinstance(href, str) and href.startswith("http"):
-            selected.append((key, href))
+            selected.append((key, href, asset))
     return selected
 
 
-def build_asset_output_path(download_dir, product_name, asset_name, asset_url):
-    ext = os.path.splitext(urlparse(asset_url).path)[1] or ".bin"
+def build_asset_output_path(download_dir, product_name, asset_name, asset_url, asset):
+    local_path = asset.get("file:local_path")
+    if isinstance(local_path, str):
+        filename = os.path.basename(local_path)
+        if filename:
+            return os.path.join(download_dir, filename)
+
+    ext = _infer_extension_from_asset(asset, asset_url)
+    if asset_name.lower() == "product":
+        base = product_name
+        if not base.upper().endswith(".ZIP"):
+            filename = f"{base}.zip"
+        else:
+            filename = base
+        return os.path.join(download_dir, filename)
+
     base = product_name.split(".")[0]
     filename = f"{base}_{asset_name}{ext}"
     return os.path.join(download_dir, filename)
@@ -294,12 +334,13 @@ def download_cog_http(data, download_dir, token_provider, asset_names, workers):
                 print(f"No matching assets for {product_name}")
                 continue
 
-            for asset_name, asset_url in links:
+            for asset_name, asset_url, asset in links:
                 output_path = build_asset_output_path(
                     download_dir=download_dir,
                     product_name=product_name,
                     asset_name=asset_name,
                     asset_url=asset_url,
+                    asset=asset,
                 )
                 if os.path.isfile(output_path):
                     continue
@@ -374,6 +415,11 @@ def main():
         help="For --mode cog-http: comma-separated STAC asset names (for example vv,vh or B02,B03,B04). Use 'all' for all data assets.",
     )
     parser.add_argument(
+        "--safe-product",
+        action="store_true",
+        help="For --mode cog-http: download full SAFE product archives (equivalent to --assets Product).",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=8,
@@ -403,7 +449,10 @@ def main():
     token_provider = TokenProvider(username=username, password=password)
 
     if args.mode == "cog-http":
-        asset_names = [x.strip() for x in args.assets.split(",") if x.strip()]
+        if args.safe_product:
+            asset_names = ["Product"]
+        else:
+            asset_names = [x.strip() for x in args.assets.split(",") if x.strip()]
         if len(asset_names) < 1:
             print("No valid asset names provided.")
             sys.exit()

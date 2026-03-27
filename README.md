@@ -118,3 +118,4 @@ Notes for direct COG HTTP mode:
 - downloads selected assets in parallel using HTTPS links (`zipper.dataspace.copernicus.eu`)
 - useful for Sentinel-1 COG products and large-volume workflows
 - use `--assets all` to download all STAC data assets
+- use `--safe-product` to download one full SAFE archive per granule (`Product` asset)
