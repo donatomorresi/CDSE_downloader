@@ -147,6 +147,81 @@ def download(session, image_id, image_name, downloadDir):
     return
 
 
+def download_product_archive(image_id, image_name, download_dir, token_provider):
+    session = make_retry_session(total=5, backoff_factor=1.0)
+    base_url = f"https://download.dataspace.copernicus.eu/odata/v1/Products({image_id})"
+    output_path = os.path.join(download_dir, f"{image_name}.zip")
+    tmp_path = f"{output_path}.part"
+
+    for endpoint in ("/$value", "/$zip"):
+        url = f"{base_url}{endpoint}"
+        for auth_try in range(2):
+            token = token_provider.get(force_refresh=(auth_try > 0))
+            headers = {"Authorization": f"Bearer {token}"}
+            response = session.get(url, headers=headers, stream=True, timeout=180)
+
+            if response.status_code == 401 and auth_try == 0:
+                continue
+
+            if response.status_code == 200:
+                try:
+                    with open(tmp_path, "wb") as f:
+                        for chunk in response.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                f.write(chunk)
+                    os.replace(tmp_path, output_path)
+                    return
+                except Exception:
+                    if os.path.isfile(tmp_path):
+                        os.remove(tmp_path)
+                    raise
+
+            if response.status_code in (400, 404):
+                break
+
+            response.raise_for_status()
+            break
+
+    raise RuntimeError(f"Neither /$value nor /$zip is available for {image_name}")
+
+
+def download_products_parallel(images_id, image_names, download_dir, token_provider, workers):
+    workers = max(1, workers)
+    if workers > 4:
+        print("Product mode is capped to 4 workers to respect CDSE concurrent-connection limits.")
+        workers = 4
+
+    tasks = list(zip(images_id, image_names))
+    n_total = len(tasks)
+    print(f"Downloading {n_total} products with {workers} workers...", flush=True)
+    done = 0
+    failed = 0
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(
+                download_product_archive,
+                image_id,
+                image_name,
+                download_dir,
+                token_provider,
+            ): image_name
+            for image_id, image_name in tasks
+        }
+
+        for i, future in enumerate(as_completed(future_map), start=1):
+            image_name = future_map[future]
+            try:
+                future.result()
+                done += 1
+                print(f"Done {i} / {n_total} : {image_name}", flush=True)
+            except Exception as e:
+                failed += 1
+                print(f"Failed to download {image_name}: {e}", flush=True)
+
+    print(f"Product download finished. Succeeded: {done}, Failed: {failed}", flush=True)
+
+
 def infer_stac_collection(product_name):
     name = product_name.upper()
     if name.startswith("S1") and "_GRD" in name:
@@ -423,7 +498,7 @@ def main():
         "--workers",
         type=int,
         default=8,
-        help="For --mode cog-http: number of parallel download workers.",
+        help="Number of parallel download workers (product mode is capped at 4).",
     )
     args = parser.parse_args()
 
@@ -467,35 +542,19 @@ def main():
 
     images_id, image_names = extract_product_ids_names(data)
     images_id, image_names = filtering_dir(images_id, image_names, downloadDir)
-
-    start_time = time.time()
-
     try:
-        token = token_provider.get(force_refresh=True)
+        token_provider.get(force_refresh=True)
     except Exception:
         print("Getting token failed! Check username and password!")
         sys.exit()
 
-    session = requests.Session()
-    session.headers.update({"Authorization": f"Bearer {token}"})
-
-    print(f"Downloading {len(image_names)} products...", flush=True)
-    for i in range(len(images_id)):
-        current_time = time.time()
-        durations = current_time - start_time
-
-        if durations > 550:
-            token = token_provider.get(force_refresh=True)
-            session.headers.update({"Authorization": f"Bearer {token}"})
-            start_time = time.time()
-        try:
-            download(session, images_id[i], image_names[i], downloadDir)
-            print(f"Done {i + 1} / {len(image_names)} : {image_names[i]}", flush=True)
-        except Exception as e:
-            print(f"Failed to download: {image_names[i]}")
-        except KeyboardInterrupt:
-            print("Process interrupted by user. Exiting...")
-            break
+    download_products_parallel(
+        images_id=images_id,
+        image_names=image_names,
+        download_dir=downloadDir,
+        token_provider=token_provider,
+        workers=args.workers,
+    )
 
 
 if __name__ == "__main__":

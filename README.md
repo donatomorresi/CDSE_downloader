@@ -89,7 +89,8 @@ Then run:
 cdse-download \
   ./test_data/query.json \
   ./download_dir \
-  ./test_data/secret.txt
+  ./test_data/secret.txt \
+  --workers 4
 ```
 
 `secret` can be either:
@@ -99,6 +100,7 @@ cdse-download \
 Downloader behavior:
 - tries `/$value` first
 - falls back to `/$zip` (useful for some Sentinel-1 products)
+- parallel product-mode downloads are supported with `--workers` (capped at 4)
 
 Direct COG HTTP mode (parallel assets):
 
