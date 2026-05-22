@@ -1,19 +1,19 @@
 # CDSE Sentinel Downloader (S2 + S1)
 
-Search and download Sentinel products from https://dataspace.copernicus.eu/ using OData query.
+Search and download Sentinel products from https://dataspace.copernicus.eu/ using CDSE OData search/download endpoints and STAC asset links for direct COG HTTP workflows.
 
 ## Install with Python
 
 With Git:
 
 ```bash
-python -m pip install git+https://github.com/vudongpham/CDSE_Sentinel2_downloader.git
+python -m pip install git+https://github.com/donatomorresi/CDSE_downloader.git@sentinel1-support
 ```
 
 Without Git:
 
 ```bash
-python -m pip install https://github.com/vudongpham/CDSE_Sentinel2_downloader/archive/refs/heads/main.zip
+python -m pip install https://github.com/donatomorresi/CDSE_downloader/archive/refs/heads/sentinel1-support.zip
 ```
 
 ## Build local Docker image
@@ -74,6 +74,17 @@ cdse-search \
   ./test_data
 ```
 
+Sentinel-1 COG product search example:
+
+```bash
+cdse-search \
+  --mission S1 \
+  --product-type IW_GRDH_1S-COG \
+  --daterange 20240101,20240131 \
+  ./test_data/berlin_boundary.gpkg \
+  ./test_data
+```
+
 ### 2. Download (credential required)
 
 Prepare a credential file with:
@@ -101,6 +112,7 @@ Downloader behavior:
 - tries `/$value` first
 - falls back to `/$zip` (useful for some Sentinel-1 products)
 - parallel product-mode downloads are supported with `--workers` (capped at 4)
+- product mode writes one full product archive per search result
 
 Direct COG HTTP mode (parallel assets):
 
@@ -114,10 +126,30 @@ cdse-download \
   --workers 16
 ```
 
+Full SAFE archive download from COG products:
+
+```bash
+cdse-download \
+  ./test_data/query.json \
+  ./download_dir \
+  ./test_data/secret.txt \
+  --mode cog-http \
+  --safe-product \
+  --workers 4
+```
+
 Notes for direct COG HTTP mode:
 - reads each product from your query JSON and resolves STAC asset links
 - uses batched STAC lookup with retry/backoff to reduce 429 rate-limit errors
 - downloads selected assets in parallel using HTTPS links (`zipper.dataspace.copernicus.eu`)
+- skips assets whose target files already exist
 - useful for Sentinel-1 COG products and large-volume workflows
 - use `--assets all` to download all STAC data assets
 - use `--safe-product` to download one full SAFE archive per granule (`Product` asset)
+- use `--workers 4` for full SAFE archives to avoid CDSE 429 errors
+
+## Tests
+
+```bash
+python -m unittest discover -s tests
+```
