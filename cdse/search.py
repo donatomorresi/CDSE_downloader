@@ -4,8 +4,6 @@ from importlib.resources import files
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import geopandas as gpd
-from shapely.ops import transform
 import json
 import argparse
 import re
@@ -78,6 +76,9 @@ def _simplify_geometry_for_query(geometry, max_wkt_len: int = 12000):
 def convert_aoi_to_wkt_tiles(
     aoi_path: str, max_wkt_len: int = 12000, simplify_geometries: bool = True
 ) -> List[str]:
+    import geopandas as gpd
+    from shapely.ops import transform
+
     def drop_z(geometry):
         if geometry is None:
             return None
@@ -121,6 +122,8 @@ def convert_aoi_to_wkt_tiles(
 
 
 def convert_aoi_to_s2idlist(aoi_path: str) -> List[str]:
+    import geopandas as gpd
+
     aoi = gpd.read_file(aoi_path)
     s2_path = files("cdse.aux_data").joinpath("sentinel2_grid.gpkg")
     s2_grid = gpd.read_file(s2_path)
