@@ -1,65 +1,68 @@
 import os
+import tempfile
 import unittest
 from pathlib import Path
 
-from search import search_by_list, search_by_aoi, search_force_logs
+from cdse.search import (
+    build_filter_expression,
+    deduplicate_products,
+    read_list_id,
+    search_force_logs,
+)
+
 
 ROOT = Path(__file__).parents[1]
-DIR_TESTDATA = ROOT / 'test_data'
-DIR_FORCELOGS = DIR_TESTDATA / 'force_logs'
+DIR_TESTDATA = ROOT / "test_data"
+DIR_FORCELOGS = DIR_TESTDATA / "force_logs"
 
-class FORCETestCase(unittest.TestCase):
 
-    def create_tmp_dir(self) -> Path:
-        """
-        Create a temporary directory for the calling test method.
-        """
-        root = Path(__file__).parents[1] / 'tmp'
-        path = root / self.__class__.__name__ / self._testMethodName
-        os.makedirs(path, exist_ok=True)
-        return path
+class SearchHelpersTestCase(unittest.TestCase):
+    def test_build_filter_expression_joins_with_and(self):
+        filters = ["Collection/Name eq 'SENTINEL-1'", "Online eq true"]
+        self.assertEqual(
+            build_filter_expression(filters),
+            "Collection/Name eq 'SENTINEL-1' and Online eq true",
+        )
 
-    def test_search_by_aoi(self):
-        # rectangle around berlin
-        tmp_dir = self.create_tmp_dir()
+    def test_read_list_id_accepts_prefixed_and_plain_s2_tiles(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
+            tmp.write("T32UNC\n")
+            tmp.write("32UPD\n")
+            tmp.write("bad\n")
+            tmp_path = tmp.name
 
-        path_json = tmp_dir / 'results_search_by_wkt.json'
-        aoi_wkt = 'POLYGON ((13.11590671451530987 52.64717493209391108, 13.11590671451530987 52.32335479958383218, 13.82003839127742317 52.32335479958383218, 13.82003839127742317 52.64717493209391108, 13.11590671451530987 52.64717493209391108))'
-        data_return = search_by_aoi('2024-01-01', '2024-01-31', 0, 100, aoi_wkt)
+        try:
+            self.assertEqual(read_list_id(tmp_path), ["32UNC", "32UPD"])
+        finally:
+            os.remove(tmp_path)
 
-        self.assertTrue(len(data_return) > 0,
-                        msg='Failed to query by WKT')
+    def test_deduplicate_products_prefers_id_then_name(self):
+        products = [
+            {"Id": "1", "Name": "A"},
+            {"Id": "1", "Name": "A duplicate"},
+            {"Name": "B"},
+            {"Name": "B"},
+        ]
 
-        path_json = tmp_dir / 'results_search_by_gpkg.json'
-        path_gpkg = DIR_TESTDATA / 'test_bound1.gpkg'
-        data_return = search_by_aoi('2024-01-01', '2024-01-31', 0, 100, aoi_wkt)
-
-        self.assertTrue(len(data_return) > 0,
-                        msg=f'Failed to query by {path_gpkg}')
-
-    def test_search_by_list(self):
-
-        list_ids = ['32UNC']
-        data_return = search_by_list('2024-01-01', '2024-01-23',0, 100, list_ids)
-        self.assertTrue(len(data_return) != 0)
+        self.assertEqual(
+            deduplicate_products(products),
+            [{"Id": "1", "Name": "A"}, {"Name": "B"}],
+        )
 
     def test_search_force_logs(self):
-
         examples = [
-            (8, {}), # all logs, recursively
-            (5, {'recursive': False}), # all logs, non-recursively
-            (5, {'rx': r'^S2[ABCD]_MSIL1C.*\.log$'}), # only S2 logs, recursively
-            (3, {'rx': r'^S2[ABCD]_MSIL1C.*\.log$', 'recursive': False}), # only S2 logs, non-recursively
-            (3, {'rx': r'^L(T04|T05|E07|C08|C09).*\.log$'}),  # only Landsat logs, recursively
-            (2, {'rx': r'^L(T04|T05|E07|C08|C09).*\.log$', 'recursive': False}),  # only Landsat logs, non-recursively
+            (8, {}),
+            (5, {"recursive": False}),
+            (5, {"rx": r"^S2[ABCD]_MSIL1C.*\.log$"}),
+            (3, {"rx": r"^S2[ABCD]_MSIL1C.*\.log$", "recursive": False}),
+            (3, {"rx": r"^L(T04|T05|E07|C08|C09).*\.log$"}),
+            (2, {"rx": r"^L(T04|T05|E07|C08|C09).*\.log$", "recursive": False}),
         ]
-        for (n_expected, kwargs) in examples:
-            logs = list(search_force_logs(DIR_FORCELOGS, **kwargs))
-            n = len(logs)
-            self.assertEqual(n_expected, n, msg=f'Expected {n_expected} logfiles, got {n} with kwargs "{kwargs}"')
+        for n_expected, kwargs in examples:
+            with self.subTest(kwargs=kwargs):
+                logs = list(search_force_logs(DIR_FORCELOGS, **kwargs))
+                self.assertEqual(n_expected, len(logs))
 
 
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

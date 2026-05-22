@@ -125,28 +125,6 @@ class TokenProvider:
             return self.token
 
 
-def download(session, image_id, image_name, downloadDir):
-    base_url = f"https://download.dataspace.copernicus.eu/odata/v1/Products({image_id})"
-    endpoints = ["/$value", "/$zip"]
-    for endpoint in endpoints:
-        response = session.get(f"{base_url}{endpoint}", stream=True, timeout=120)
-        if response.status_code == 200:
-            with open(f"{downloadDir}/{image_name}.zip", "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            return
-
-        # Retry with the next endpoint if not found or unsupported
-        if response.status_code not in (400, 404):
-            print(f"Failed to download {image_name}: HTTP {response.status_code}")
-            print(response.text)
-            return
-
-    print(f"Failed to download {image_name}: neither /$value nor /$zip is available.")
-    return
-
-
 def download_product_archive(image_id, image_name, download_dir, token_provider):
     session = make_retry_session(total=5, backoff_factor=1.0)
     base_url = f"https://download.dataspace.copernicus.eu/odata/v1/Products({image_id})"
@@ -239,15 +217,6 @@ def stac_item_id_from_name(product_name):
         if item_id.upper().endswith(ext):
             return item_id[: -len(ext)]
     return item_id
-
-
-def fetch_stac_item(stac_session, collection_id, item_id):
-    url = f"{STAC_BASE_URL}/collections/{collection_id}/items/{item_id}"
-    response = stac_session.get(url, timeout=60)
-    if response.status_code == 404:
-        return None
-    response.raise_for_status()
-    return response.json()
 
 
 def fetch_stac_items_by_ids(stac_session, collection_id, item_ids, batch_size=100):
